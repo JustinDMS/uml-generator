@@ -35,7 +35,7 @@ node --test tests/
 | `FOR …` (e.g. `FOR x IN xs`) | the same loop shape with the header text in the diamond; paths are `next` / `done` |
 | `DO … WHILE c` | post-test loop |
 | `RETURN` · `RETURN x` | flow ends at an activity final node |
-| `FRAME Name` | activity frame titled `Name` |
+| `FRAME Name` | named frame (rounded rectangle with a title tab) around its indented block. Frames nest and can sit anywhere: flow enters through the top border straight to the first step inside and leaves through the bottom border. A program that is exactly one `FRAME` is the activity's own frame, with the initial and final nodes inside it. `RETURN` inside a frame still ends the whole activity. |
 
 - **Blocks** are defined by indentation alone: a block is the lines indented below its header and ends
   where the indentation does. An unindented body is an empty block and gets a warning. Each leading
@@ -62,12 +62,13 @@ source text ─▶ parser.js ─▶ AST ─▶ layout.js ─▶ geometry ─▶ 
 
 | File | Responsibility |
 | --- | --- |
-| `js/parser.js` | Line-based parser that produces an AST (`action`, `if`, `while`, `doWhile`, `return`) plus diagnostics with line numbers. |
+| `js/parser.js` | Line-based parser that produces an AST (`action`, `if`, `while`, `doWhile`, `return`, `frame`) plus diagnostics with line numbers. |
 | `js/layout.js` | Structured layout. Each statement becomes a *fragment* with a vertical axis. Compound statements place their children and route orthogonal edges and loop rails around them. A fragment's outgoing flow is left *dangling* for the parent to finish, so every flow is one polyline with at most 4 bends (enforced by a randomized test). It knows nothing about SVG. |
 | `js/render.js` | Turns the geometry into SVG markup with CSS classes, so the page theme drives the colours. |
 | `js/export.js` | Standalone SVG (styles inlined) and PNG (2× raster). Exports always use the light theme. |
 | `js/app.js` | UI: live update, gutter and problem list, zoom/pan, click a node to jump to its source line, loop hover highlighting, examples, light/dark toggle (follows the system until you choose), `localStorage` persistence. |
 | `js/examples.js` | Sample programs. They double as test fixtures. |
+| `js/version.js` | The release version shown in the top bar (semver). Bump it with each release. |
 
 All modules attach to one global, `P2U`, so they load with plain `<script>` tags and can be `require`d in Node for the tests.
 
@@ -81,7 +82,8 @@ layout function.
   - `SWITCH/CASE` can be lowered to nested decisions the way `ELIF` chains are, or drawn as one
     multi-way decision with the switched expression inside and case values labelling the outgoing edges.
   - `BREAK` / `CONTINUE` need the loop layouts to expose exit and loop-back ports to nested fragments.
-- Only one `FRAME` per diagram. Multiple frames could become separate diagrams or call-behaviour actions.
+- `RETURN` inside a nested frame ends the whole activity. Treating frames as sub-activities, where `RETURN` leaves only
+  the innermost frame, would need the same exit ports as `BREAK`.
 - Swimlanes (partitions), fork/join for `PARALLEL` blocks, object nodes and signals (`SEND` / `RECEIVE`) are
   natural extensions: add an AST node, a layout function and a render case.
 - The editor is a plain `<textarea>`. Swapping in CodeMirror would add syntax highlighting.

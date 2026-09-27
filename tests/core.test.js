@@ -128,20 +128,48 @@ test('REPEAT, UNTIL and STOP are not keywords', () => {
   assert.equal(ast.diagnostics.length, 0);
 });
 
-test('FRAME sets the title and unreachable code is flagged', () => {
+test('FRAME owns its indented block; unreachable code inside is flagged', () => {
   const ast = parse('FRAME Demo\n    RETURN 1\n    print "never"');
-  assert.equal(ast.title, 'Demo');
-  assert.equal(ast.body[0].type, 'return');
-  assert.equal(ast.body.length, 2);
+  assert.deepEqual(strip(ast.body), [
+    {
+      type: 'frame',
+      title: 'Demo',
+      body: [
+        { type: 'return', text: 'RETURN 1' },
+        { type: 'action', text: 'print "never"' },
+      ],
+    },
+  ]);
   assert.ok(ast.diagnostics.some((d) => /Unreachable/.test(d.message)));
+});
+
+test('frames nest and sit anywhere in the flow', () => {
+  const ast = parse('before\nFRAME Outer\n\tFRAME Inner\n\t\tstep\n\tbetween\nafter');
+  const [before, outer, after] = ast.body;
+  assert.equal(before.text, 'before');
+  assert.equal(after.text, 'after');
+  assert.equal(outer.type, 'frame');
+  assert.equal(outer.body[0].type, 'frame');
+  assert.equal(outer.body[0].title, 'Inner');
+  assert.equal(ast.diagnostics.length, 0);
+});
+
+test('an unindented FRAME is an empty frame with a warning', () => {
+  const ast = parse('FRAME Lonely\nstep');
+  assert.deepEqual(strip(ast.body[0]), { type: 'frame', title: 'Lonely', body: [] });
+  assert.ok(ast.diagnostics.some((d) => d.line === 1 && /Empty FRAME/.test(d.message)));
 });
 
 test('only FRAME creates a frame (DEF, FUNCTION, ALGORITHM are plain actions)', () => {
   for (const kw of ['def', 'FUNCTION', 'ALGORITHM', 'PROCEDURE']) {
     const ast = parse(`${kw} foo`);
-    assert.equal(ast.title, null, kw);
     assert.deepEqual(strip(ast.body), [{ type: 'action', text: `${kw} foo` }]);
   }
+});
+
+test('version is semver', () => {
+  require('../js/version.js');
+  assert.match(globalThis.P2U.version, /^\d+\.\d+\.\d+$/);
 });
 
 test('a tab is one indentation character', () => {
@@ -176,6 +204,22 @@ function checkGeometry(d) {
       const [a, b] = [d.nodes[i], d.nodes[j]];
       const apart = Math.abs(a.x - b.x) >= (a.w + b.w) / 2 || Math.abs(a.y - b.y) >= (a.h + b.h) / 2;
       assert.ok(apart, `nodes overlap: ${a.kind}@${a.x},${a.y} and ${b.kind}@${b.x},${b.y}`);
+    }
+  }
+  // Frames: inside the canvas, never cutting through a node, and either
+  // nested or disjoint with respect to each other.
+  const box = (n) => ({ x0: n.x - n.w / 2, y0: n.y - n.h / 2, x1: n.x + n.w / 2, y1: n.y + n.h / 2 });
+  const fbox = (f) => ({ x0: f.x, y0: f.y, x1: f.x + f.w, y1: f.y + f.h });
+  const contains = (o, i) => i.x0 >= o.x0 - 0.01 && i.x1 <= o.x1 + 0.01 && i.y0 >= o.y0 - 0.01 && i.y1 <= o.y1 + 0.01;
+  const disjoint = (a, b) => a.x1 <= b.x0 + 0.01 || b.x1 <= a.x0 + 0.01 || a.y1 <= b.y0 + 0.01 || b.y1 <= a.y0 + 0.01;
+  const frames = d.frames.map(fbox);
+  for (const [i, f] of frames.entries()) {
+    assert.ok(contains({ x0: 0, y0: 0, x1: d.width, y1: d.height }, f), `frame outside canvas: ${d.frames[i].title}`);
+    for (const n of d.nodes) {
+      assert.ok(contains(f, box(n)) || disjoint(f, box(n)), `frame "${d.frames[i].title}" cuts through a ${n.kind}`);
+    }
+    for (const [j, g] of frames.entries()) {
+      if (i < j) assert.ok(contains(f, g) || contains(g, f) || disjoint(f, g), 'frames partially overlap');
     }
   }
   for (const e of d.edges) {
@@ -306,6 +350,50 @@ test('unreachable code after RETURN does not flow onwards', () => {
   checkGeometry(d);
 });
 
+const nodeByText = (d, text) => d.nodes.find((n) => n.lines && n.lines.join(' ') === text);
+const insideFrame = (n, f) =>
+  n.x - n.w / 2 >= f.x && n.x + n.w / 2 <= f.x + f.w && n.y - n.h / 2 >= f.y && n.y + n.h / 2 <= f.y + f.h;
+
+test('a program that is one FRAME is the activity frame, holding initial and final nodes', () => {
+  const d = layout(parse('FRAME Main\n\tstep'));
+  assert.equal(d.frames.length, 1);
+  for (const kind of ['initial', 'final']) {
+    assert.ok(insideFrame(d.nodes.find((n) => n.kind === kind), d.frames[0]), kind);
+  }
+  checkGeometry(d);
+});
+
+test('inline frames: flow crosses the top border in and the bottom border out', () => {
+  const d = layout(parse('before\nFRAME Sub\n\tinside\nafter'));
+  const [frame] = d.frames;
+  assert.equal(frame.title, 'Sub');
+  const inside = nodeByText(d, 'inside');
+  const after = nodeByText(d, 'after');
+  assert.ok(insideFrame(inside, frame));
+  for (const n of ['before', 'after'].map((t) => nodeByText(d, t)).concat(d.nodes.filter((n) => n.kind !== 'action'))) {
+    assert.ok(!insideFrame(n, frame), `${n.kind} should be outside the frame`);
+  }
+  const endingAt = (n) => d.edges.find((e) => {
+    const [x, y] = e.points[e.points.length - 1];
+    return Math.abs(x - n.x) < 0.01 && Math.abs(y - (n.y - n.h / 2)) < 0.01;
+  });
+  const into = endingAt(inside);
+  assert.ok(into.points[0][1] < frame.y, 'incoming edge starts above the frame');
+  const out = endingAt(after);
+  assert.ok(out.points[0][1] < frame.y + frame.h && out.points[0][1] > frame.y, 'outgoing edge starts inside the frame');
+  checkGeometry(d);
+});
+
+test('nested frames nest geometrically and loops inside frames stay tagged', () => {
+  const d = layout(parse('FRAME Outer\n\tFRAME Inner\n\t\tWHILE a\n\t\t\tstep\n\tafter'));
+  const outer = d.frames.find((f) => f.title === 'Outer');
+  const inner = d.frames.find((f) => f.title === 'Inner');
+  assert.ok(inner.x > outer.x && inner.y > outer.y && inner.x + inner.w < outer.x + outer.w && inner.y + inner.h < outer.y + outer.h);
+  assert.ok(insideFrame(nodeByText(d, 'step'), inner));
+  assert.ok(!insideFrame(nodeByText(d, 'after'), inner) && insideFrame(nodeByText(d, 'after'), outer));
+  checkGeometry(d);
+});
+
 test('all examples parse cleanly, lay out and render', () => {
   for (const ex of examples) {
     const ast = parse(ex.source);
@@ -327,7 +415,7 @@ test('random nested programs keep edges within 4 bends', () => {
     const count = 1 + rand(3);
     for (let i = 0; i < count; i++) {
       const pad = '\t'.repeat(indent);
-      const kind = depth > 0 ? rand(8) : 0;
+      const kind = depth > 0 ? rand(9) : 0;
       if (kind === 1 || kind === 2) {
         lines.push(`${pad}IF c${rand(99)}`, ...gen(depth - 1, indent + 1));
         if (rand(2)) lines.push(`${pad}ELIF d${rand(99)}`, ...gen(depth - 1, indent + 1));
@@ -340,6 +428,8 @@ test('random nested programs keep edges within 4 bends', () => {
         lines.push(`${pad}DO`, ...gen(depth - 1, indent + 1), `${pad}WHILE u${rand(99)}`);
       } else if (kind === 6 && i === count - 1) {
         lines.push(`${pad}RETURN r`);
+      } else if (kind === 7) {
+        lines.push(`${pad}FRAME Part ${rand(99)}`, ...gen(depth - 1, indent + 1));
       } else {
         lines.push(`${pad}step ${rand(999)}`);
       }

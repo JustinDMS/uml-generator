@@ -10,6 +10,7 @@
  *   { type: 'while', cond, body, iterate?: true, line }   (iterate: FOR loop)
  *   { type: 'doWhile', body, cond, line }                  (DO ... WHILE cond)
  *   { type: 'return', text: string | null, line }
+ *   { type: 'frame', title, body, line }                   (named frame; may nest)
  */
 (function () {
   'use strict';
@@ -99,7 +100,6 @@
     constructor(lines) {
       this.lines = lines;
       this.i = 0;
-      this.title = null;
       this.diagnostics = [];
     }
 
@@ -151,10 +151,7 @@
       this.i++;
 
       if ((m = t.match(RE.frame))) {
-        if (this.title === null) this.title = normalize(m[1]);
-        else this.report(ln.line, 'warning', 'Only one FRAME per diagram is supported; ignored');
-        const next = this.peek();
-        return next && next.indent > ln.indent ? this.parseBlock(next.indent) : [];
+        return [{ type: 'frame', title: normalize(m[1]), body: this.parseBody(ln, 'FRAME'), line: ln.line }];
       }
 
       if (RE.strayElse.test(t)) {
@@ -242,7 +239,7 @@
 
   /**
    * @param {string} source
-   * @returns {{ title: string|null, body: object[], diagnostics: {line:number, severity:string, message:string}[] }}
+   * @returns {{ body: object[], diagnostics: {line:number, severity:string, message:string}[] }}
    */
   function parse(source) {
     const { lines, mixedLine } = toLines(source);
@@ -255,7 +252,7 @@
     while (parser.i < lines.length) {
       body.push(...parser.parseBlock(parser.peek().indent));
     }
-    return { title: parser.title, body, diagnostics: parser.diagnostics };
+    return { body, diagnostics: parser.diagnostics };
   }
 
   P2U.parse = parse;

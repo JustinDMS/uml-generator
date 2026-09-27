@@ -23,6 +23,7 @@
       </select>
     </label>
     <div class="toolbar">
+      <span class="version" id="version"></span>
       <button type="button" id="export-svg">SVG</button>
       <button type="button" id="export-png">PNG</button>
       <button type="button" id="theme-toggle" class="icon-button" aria-label="Switch to dark mode" title="Switch to dark mode">
@@ -45,7 +46,7 @@
           <tr><td><code>FOR …</code></td><td>Loop over anything, e.g. <code>FOR x IN xs</code>; paths are <code>next</code>/<code>done</code></td></tr>
           <tr><td><code>DO … WHILE c</code></td><td>Post-test loop</td></tr>
           <tr><td><code>RETURN</code> · <code>RETURN x</code></td><td>Flow to an activity final node</td></tr>
-          <tr><td><code>FRAME Name</code></td><td>Activity frame titled <code>Name</code></td></tr>
+          <tr><td><code>FRAME Name</code></td><td>Named frame around its indented block. Frames nest; flow enters through the top border and leaves through the bottom. A program that is one frame gets the start and end inside it.</td></tr>
           <tr><td>anything else</td><td>Action</td></tr>
         </table>
         <p>Blocks are defined by indentation alone and end where it does; Tab inserts one tab character, one indentation level. A trailing colon is optional. Comments: <code>//</code> or a leading <code>#</code>.</p>
@@ -72,6 +73,7 @@
     </section>
   </main>
 
+  <script src="js/version.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/layout.js"></script>
   <script src="js/render.js"></script>

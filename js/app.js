@@ -4,7 +4,7 @@
  */
 (function () {
   'use strict';
-  const { parse, layout, render, exporters, examples } = globalThis.P2U;
+  const { parse, layout, render, exporters, examples, version } = globalThis.P2U;
 
   const STORAGE_KEY = 'p2u.source';
   const THEME_KEY = 'p2u.theme'; // also read by the inline script in index.html
@@ -87,7 +87,7 @@
       els.stage.innerHTML = render(layout(ast));
     } catch (err) {
       console.error(err);
-      ast = { title: null, body: [], diagnostics: [{ line: 0, severity: 'error', message: `Internal error: ${err.message}` }] };
+      ast = { body: [], diagnostics: [{ line: 0, severity: 'error', message: `Internal error: ${err.message}` }] };
     }
     state.ast = ast;
     state.focusedLoop = null; // the old diagram's elements are gone
@@ -160,7 +160,7 @@
 
   function highlightCurrentLine() {
     const line = document.activeElement === els.source ? currentLine() : null;
-    for (const n of els.stage.querySelectorAll('.p2u-node[data-line]')) {
+    for (const n of els.stage.querySelectorAll('.p2u-node[data-line], .p2u-frame[data-line]')) {
       n.classList.toggle('active', Number(n.dataset.line) === line);
     }
   }
@@ -208,7 +208,7 @@
     const svg = els.stage.querySelector('svg');
     if (!svg) return;
     svg.classList.toggle('loop-focus', id !== null);
-    for (const el of svg.querySelectorAll('.p2u-node, .p2u-edge, .p2u-guard')) {
+    for (const el of svg.querySelectorAll('.p2u-node, .p2u-edge, .p2u-guard, .p2u-frame')) {
       const loops = el.dataset.loops ? el.dataset.loops.split(' ') : [];
       el.classList.toggle('in-loop', id !== null && loops.includes(id));
     }
@@ -295,7 +295,7 @@
     });
     const end = () => {
       if (drag && !drag.moved) {
-        const node = drag.target.closest && drag.target.closest('.p2u-node[data-line]');
+        const node = drag.target.closest && drag.target.closest('.p2u-node[data-line], .p2u-frame[data-line]');
         if (node) selectLine(Number(node.dataset.line));
       }
       drag = null;
@@ -335,7 +335,9 @@
   }
 
   function fileName() {
-    const title = state.ast && state.ast.title;
+    // Name the file after the first top-level FRAME, if any.
+    const frame = state.ast && state.ast.body.find((s) => s.type === 'frame');
+    const title = frame && frame.title;
     return (title || 'activity-diagram').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'activity-diagram';
   }
 
@@ -355,6 +357,8 @@
   }
 
   function init() {
+    $('version').textContent = `v${version}`;
+
     for (const [i, ex] of examples.entries()) {
       els.examples.add(new Option(ex.name, String(i)));
     }

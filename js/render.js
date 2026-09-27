@@ -100,11 +100,13 @@
 
   function frameSVG(f) {
     const tabW = Math.min(f.w, f.tabW);
+    const [x, y] = [r(f.x), r(f.y)];
+    const attrs = (f.line ? ` data-line="${f.line}"` : '') + loopAttrs(f);
     return (
-      `<g class="p2u-frame">` +
-      `<rect x="${f.x}" y="${f.y}" width="${r(f.w)}" height="${r(f.h)}" rx="14" ry="14"/>` +
-      `<text class="p2u-frame-title" x="${f.x + 14}" y="${f.y + 19}">${esc(f.title)}</text>` +
-      `<path class="p2u-frame-tab" d="M${f.x},${f.y + 30} H${r(f.x + tabW - 10)} L${r(f.x + tabW)},${f.y + 20} V${f.y}"/>` +
+      `<g class="p2u-frame"${attrs}>` +
+      `<rect x="${x}" y="${y}" width="${r(f.w)}" height="${r(f.h)}" rx="14" ry="14"/>` +
+      `<text class="p2u-frame-title" x="${r(x + 14)}" y="${r(y + 19)}">${esc(f.title)}</text>` +
+      `<path class="p2u-frame-tab" d="M${x},${r(y + 30)} H${r(x + tabW - 10)} L${r(x + tabW)},${r(y + 20)} V${y}"/>` +
       `</g>`
     );
   }
@@ -115,7 +117,7 @@
     return [
       `<svg xmlns="http://www.w3.org/2000/svg" class="p2u-diagram" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">`,
       `<defs>${marker('p2u-arrow', 'p2u-arrowhead')}${marker('p2u-arrow-loop', 'p2u-arrowhead p2u-arrowhead-loop')}</defs>`,
-      diagram.frame ? frameSVG(diagram.frame) : '',
+      ...diagram.frames.map(frameSVG), // outermost first, behind everything else
       ...diagram.edges.map(edgeSVG),
       ...diagram.nodes.map(nodeSVG),
       ...diagram.labels.map(labelSVG),

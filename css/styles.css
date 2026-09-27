@@ -136,7 +136,13 @@ button.link {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
-.toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.version {
+  margin-right: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 
 .icon-button {
   display: inline-flex; align-items: center; justify-content: center;
@@ -305,17 +311,22 @@ textarea:focus-visible { outline-offset: -2px; }
 .p2u-frame-title { fill: var(--text); font-size: 14px; font-weight: 600; }
 
 /* Hovering a loop dims everything outside it (see js/app.js). */
-.p2u-node, .p2u-edge, .p2u-guard { transition: opacity 0.15s ease; }
+.p2u-node, .p2u-edge, .p2u-guard, .p2u-frame { transition: opacity 0.15s ease; }
 .loop-focus .p2u-node:not(.in-loop),
 .loop-focus .p2u-edge:not(.in-loop),
-.loop-focus .p2u-guard:not(.in-loop) { opacity: 0.18; }
+.loop-focus .p2u-guard:not(.in-loop),
+.loop-focus .p2u-frame:not(.in-loop) { opacity: 0.18; }
 
-.p2u-node[data-line] { cursor: pointer; }
+.p2u-node[data-line], .p2u-frame-title { cursor: pointer; }
 .p2u-node[data-line]:hover rect,
 .p2u-node[data-line]:hover polygon,
 .p2u-node.active rect,
 .p2u-node.active polygon,
 .p2u-node.active .p2u-final-ring { stroke: var(--highlight); stroke-width: 2.4; }
+.p2u-frame:hover rect,
+.p2u-frame:hover .p2u-frame-tab,
+.p2u-frame.active rect,
+.p2u-frame.active .p2u-frame-tab { stroke: var(--highlight); stroke-width: 2; }
 
 /* ------------------------------------------------------------- mobile */
 

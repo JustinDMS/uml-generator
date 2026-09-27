@@ -13,7 +13,7 @@
  * Output (all coordinates absolute, node x/y are centres):
  *   {
  *     width, height,
- *     frame: { x, y, w, h, title, tabW } | null,
+ *     frames: [{ x, y, w, h, title, tabW, line, loops? }],   (outermost first)
  *     nodes:  [{ kind: 'initial'|'final'|'action'|'decision'|'merge', x, y, w, h, lines?, line? }],
  *     edges:  [{ points: [[x, y], ...], arrow: boolean }],
  *     labels: [{ text, x, y, anchor: 'start'|'middle'|'end' }],
@@ -87,8 +87,13 @@
 
   // ----------------------------------------------------------- fragments
 
+  /**
+   * `entryY` is how far below the top edge incoming flow really ends: 0 for
+   * most fragments, deeper for a frame, whose incoming edge crosses the
+   * border and continues to the first node inside.
+   */
   function frag(w, h, cx) {
-    return { w, h, cx, exit: null, nodes: [], edges: [], labels: [] };
+    return { w, h, cx, entryY: 0, exit: null, nodes: [], edges: [], labels: [], frames: [] };
   }
 
   /** An empty statement list: no size, flow passes straight through. */
@@ -98,7 +103,7 @@
     return f;
   }
 
-  const isEmpty = (f) => f.nodes.length === 0;
+  const isEmpty = (f) => f.nodes.length === 0 && f.frames.length === 0;
   const last = (path) => path[path.length - 1];
   const shift = (path, dx, dy) => path.map(([x, y]) => [x + dx, y + dy]);
 
@@ -106,6 +111,7 @@
     for (const n of child.nodes) parent.nodes.push({ ...n, x: n.x + dx, y: n.y + dy });
     for (const e of child.edges) parent.edges.push({ ...e, points: shift(e.points, dx, dy) });
     for (const l of child.labels) parent.labels.push({ ...l, x: l.x + dx, y: l.y + dy });
+    for (const fr of child.frames) parent.frames.push({ ...fr, x: fr.x + dx, y: fr.y + dy });
   }
 
   /** Drop duplicate and collinear interior points. */
@@ -125,7 +131,11 @@
 
   /** `kind` is 'flow' for ordinary control flow, 'loop' for a loop's back edge. */
   function edge(f, points, kind = 'flow') {
-    const e = { points: simplify(points), arrow: true, kind };
+    // Snap away floating-point noise (e.g. 431.3 vs 431.29999999999995) that
+    // arises when the same x is reached by different sums; otherwise a
+    // vertical segment can come out a hair off vertical.
+    const snap = (v) => Math.round(v * 1000) / 1000;
+    const e = { points: simplify(points.map(([x, y]) => [snap(x), snap(y)])), arrow: true, kind };
     f.edges.push(e);
     return e;
   }
@@ -142,7 +152,8 @@
   function enter(f, into, body, dx, dy) {
     if (isEmpty(body)) return into;
     place(f, body, dx, dy);
-    edge(f, into);
+    const [x, y] = last(into);
+    edge(f, [...into.slice(0, -1), [x, y + body.entryY]]);
     return body.exit ? shift(body.exit, dx, dy) : null;
   }
 
@@ -157,7 +168,7 @@
   let nextLoopId = 1;
 
   function tagLoop(f, id) {
-    for (const item of [...f.nodes, ...f.edges, ...f.labels]) item.loops = [...(item.loops || []), id];
+    for (const item of [...f.nodes, ...f.edges, ...f.labels, ...f.frames]) item.loops = [...(item.loops || []), id];
   }
 
   // -------------------------------------------------------------- leaves
@@ -257,7 +268,7 @@
     parts.forEach((p, i) => {
       if (i > 0) {
         const top = y + C.gapY;
-        if (pending) finish(f, pending, [[last(pending)[0], top]]);
+        if (pending) finish(f, pending, [[last(pending)[0], top + p.entryY]]);
         y = top;
       }
       const reachable = i === 0 || pending !== null;
@@ -269,6 +280,7 @@
     });
     f.h = y;
     f.exit = pending;
+    f.entryY = parts[0].entryY;
     return f;
   }
 
@@ -286,6 +298,8 @@
         return layoutWhile(s);
       case 'doWhile':
         return layoutDoWhile(s);
+      case 'frame':
+        return frameAround(s.title, layoutSeq(s.body), s.line, true);
       case 'return':
         return s.text ? stack([layoutAction(s.text, s.line), layoutFinal(s.line)]) : layoutFinal(s.line);
       default:
@@ -428,46 +442,79 @@
 
   // ------------------------------------------------------------- diagram
 
+  /** Horizontal extent of a fragment including labels that poke past it. */
+  function labelBounds(f) {
+    let min = 0;
+    let max = f.w;
+    for (const l of f.labels) {
+      const w = measure(l.text, C.labelFont);
+      const x0 = l.anchor === 'end' ? l.x - w : l.anchor === 'middle' ? l.x - w / 2 : l.x;
+      min = Math.min(min, x0);
+      max = Math.max(max, x0 + w);
+    }
+    return [min, max];
+  }
+
+  // --------------------------------------------------------------- frames
+
   /**
-   * @param {{ title: string|null, body: object[] }} ast
+   * Draw a named frame (rounded rectangle with a title tab) around `inner`.
+   * With `crossing`, flow enters through the top border straight to the
+   * first node inside and leaves through the bottom border, so the frame
+   * sits inline in the flow; the entry line is kept clear of the title tab.
+   */
+  function frameAround(title, inner, line, crossing) {
+    const tabW = measure(title, C.titleFont) + 36;
+    const top = C.frameTitleH + C.framePad / 2;
+    const pad = C.framePad;
+    const [lo, hi] = labelBounds(inner);
+    const needW = Math.max(hi - lo + 2 * pad, tabW + 20);
+    // Centre the content when the title makes the frame wider than it.
+    let left = Math.max(pad - lo, (needW - (hi - lo)) / 2 - lo);
+    if (crossing) left = Math.max(left, tabW + 12 - inner.cx);
+    const w = Math.max(needW, left + hi + pad);
+    const h = top + inner.h + pad;
+
+    const f = frag(w, h, left + inner.cx);
+    f.frames.push({ x: 0, y: 0, w, h, title, tabW, line });
+    place(f, inner, left, top);
+    f.entryY = top + inner.entryY;
+    if (inner.exit) {
+      const exit = shift(inner.exit, left, top);
+      f.exit = [...exit, [last(exit)[0], h]];
+    }
+    return f;
+  }
+
+  // ------------------------------------------------------------- diagram
+
+  /**
+   * A program that is exactly one FRAME is drawn as the activity's own frame,
+   * with the initial and final nodes inside it. Otherwise every FRAME sits
+   * inline in the flow and the initial/final nodes are outside all of them.
+   *
+   * @param {{ body: object[] }} ast
    */
   function layout(ast) {
     nextLoopId = 1;
-    const body = layoutSeq(ast.body);
+    const whole = ast.body.length === 1 && ast.body[0].type === 'frame' ? ast.body[0] : null;
+    const body = layoutSeq(whole ? whole.body : ast.body);
     const parts = [layoutInitial(), body];
     if (body.exit) parts.push(layoutFinal());
-    const main = stack(parts);
+    let main = stack(parts);
+    if (whole) main = frameAround(whole.title, main, whole.line, false);
 
-    // Labels are left-anchored beside their edge and may poke past fragment
-    // bounds; include them in the extent.
-    let minX = 0;
-    let maxX = main.w;
-    for (const l of main.labels) {
-      const w = measure(l.text, C.labelFont);
-      const x0 = l.anchor === 'end' ? l.x - w : l.anchor === 'middle' ? l.x - w / 2 : l.x;
-      minX = Math.min(minX, x0);
-      maxX = Math.max(maxX, x0 + w);
-    }
-
-    const title = ast.title || null;
-    const inset = title ? C.framePad : 0;
-    const top = title ? C.frameTitleH + C.framePad / 2 : 0;
-    const contentW = Math.max(maxX - minX, title ? measure(title, C.titleFont) + 40 : 0);
-
+    const [minX, maxX] = labelBounds(main);
     const out = frag(0, 0, 0);
-    place(out, main, C.margin + inset - minX + (contentW - (maxX - minX)) / 2, C.margin + top);
-
-    const frame = title
-      ? { x: C.margin, y: C.margin, w: contentW + 2 * inset, h: main.h + top + inset, title, tabW: measure(title, C.titleFont) + 36 }
-      : null;
+    place(out, main, C.margin - minX, C.margin);
 
     return {
-      width: Math.ceil(contentW + 2 * inset + 2 * C.margin),
-      height: Math.ceil(main.h + top + inset + 2 * C.margin),
-      frame,
+      width: Math.ceil(maxX - minX + 2 * C.margin),
+      height: Math.ceil(main.h + 2 * C.margin),
       nodes: out.nodes,
       edges: out.edges,
       labels: out.labels,
+      frames: out.frames,
     };
   }
 

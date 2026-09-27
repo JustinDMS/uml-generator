@@ -63,6 +63,23 @@
 `,
     },
     {
+      name: 'Checkout (nested frames)',
+      source: `FRAME Checkout
+    validate cart
+    FRAME Payment
+        charge card
+        IF payment declined
+            notify customer
+            RETURN
+        record transaction
+    FRAME Fulfilment
+        FOR item IN order
+            pick item
+        pack and ship parcel
+    send receipt
+`,
+    },
+    {
       name: 'Digit sum (while)',
       source: `FRAME DigitSum
     read n
