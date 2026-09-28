@@ -8,19 +8,68 @@
 
   P2U.examples = [
     {
+      name: 'Fibonacci trace (recursion)',
+      source: `DEF Fibonacci Trace
+    START
+    include input.hpp
+    define n = getInput()
+    fib(n, 0)
+    END
+
+    // A DEF is a definition: it runs where it's called.
+    DEF fib(n, d)
+        START
+        print Enter
+        IF n <= 1
+            print Exit
+            END
+        fib(n - 1, d + 1) + fib(n - 2, d + 1)
+        print Exit
+        END
+`,
+    },
+    {
+      name: 'Checkout (calls)',
+      source: `DEF Checkout
+    START
+    validate cart
+    takePayment(order)
+    fulfil(order)
+    send receipt
+    END
+
+    DEF takePayment(order)
+        START
+        charge card
+        IF payment declined
+            notify customer
+            END
+        record transaction
+        END
+
+    DEF fulfil(order)
+        START
+        FOR item IN order
+            pick item
+        pack and ship parcel
+        END
+`,
+    },
+    {
       name: 'Linear search',
-      source: `FRAME LinearSearch
-    // Indentation defines blocks.
+      source: `DEF LinearSearch
+    START
     read list and target
     FOR i IN 1..length(list)
         IF list[i] == target
-            RETURN i
-    RETURN -1
+            END i
+    END -1
 `,
     },
     {
       name: 'Grade classifier (elif)',
-      source: `FRAME ClassifyGrade
+      source: `DEF ClassifyGrade
+    START
     IF score >= 90
         grade = "A"
     ELIF score >= 80
@@ -31,11 +80,13 @@
         grade = "F"
         notify advisor
     print grade
+    END
 `,
     },
     {
       name: 'Login attempts (do-while)',
-      source: `FRAME Login
+      source: `DEF Login
+    START
     attempts = 0
     DO
         prompt for username and password
@@ -45,13 +96,15 @@
         open dashboard
     ELSE
         lock account
-        RETURN
+        END
     log session start
+    END
 `,
     },
     {
       name: 'Nested loops (bubble sort)',
-      source: `FRAME BubbleSort
+      source: `DEF BubbleSort
+    START
     swapped = true
     WHILE swapped
         swapped = false
@@ -60,28 +113,13 @@
                 swap a and b
                 swapped = true
     output list
-`,
-    },
-    {
-      name: 'Checkout (nested frames)',
-      source: `FRAME Checkout
-    validate cart
-    FRAME Payment
-        charge card
-        IF payment declined
-            notify customer
-            RETURN
-        record transaction
-    FRAME Fulfilment
-        FOR item IN order
-            pick item
-        pack and ship parcel
-    send receipt
+    END
 `,
     },
     {
       name: 'Digit sum (while)',
-      source: `FRAME DigitSum
+      source: `DEF DigitSum
+    START
     read n
     total = 0
     WHILE n > 0
@@ -91,6 +129,7 @@
         print "divisible by 3"
     ELSE
         print "not divisible by 3"
+    END
 `,
     },
   ].map((ex) => ({ ...ex, source: tabs(ex.source) }));

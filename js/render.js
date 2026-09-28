@@ -29,18 +29,37 @@
   }
 
   /**
-   * Loop membership for hover highlighting: `data-loops` lists the ids of
-   * the loops an element sits in; `data-loop-id` marks a loop's hover handle.
+   * Membership for hover highlighting (see js/app.js): `data-loops` and
+   * `data-frames` list the loops / frames an element sits in. Hover handles:
+   * `data-loop-id` (a loop's decision and back edge) and `data-calls` (a call
+   * action, listing the frames it invokes).
    */
-  function loopAttrs(item) {
+  function groupAttrs(item) {
+    const list = (name, ids) => (ids && ids.length ? ` ${name}="${ids.join(' ')}"` : '');
     return (
-      (item.loops ? ` data-loops="${item.loops.join(' ')}"` : '') +
-      (item.loopId ? ` data-loop-id="${item.loopId}"` : '')
+      list('data-loops', item.loops) +
+      list('data-frames', item.inFrames) +
+      list('data-calls', item.calls) +
+      (item.loopId ? ` data-loop-id="${item.loopId}"` : '') +
+      (item.frameId ? ` data-frame-id="${item.frameId}"` : '')
+    );
+  }
+
+  /**
+   * The UML call-behaviour "rake" (a small trident) in an action's lower
+   * right corner, marking an action that invokes another activity (a DEF).
+   */
+  function rakeSVG(n) {
+    const cx = r(n.x + n.w / 2 - 14);
+    const cy = r(n.y + n.h / 2 - 12);
+    return (
+      `<path class="p2u-rake" d="M${cx},${r(cy - 4)} V${r(cy + 5)} ` +
+      `M${r(cx - 5)},${r(cy + 5)} V${cy} H${r(cx + 5)} V${r(cy + 5)}"/>`
     );
   }
 
   function nodeSVG(n) {
-    const attrs = (n.line ? ` data-line="${n.line}"` : '') + loopAttrs(n);
+    const attrs = (n.line ? ` data-line="${n.line}"` : '') + groupAttrs(n);
     const x0 = r(n.x - n.w / 2);
     const y0 = r(n.y - n.h / 2);
     switch (n.kind) {
@@ -66,9 +85,9 @@
       }
       case 'action':
         return (
-          `<g class="p2u-node p2u-action"${attrs}>` +
+          `<g class="p2u-node p2u-action${n.calls ? ' p2u-call' : ''}"${attrs}>` +
           `<rect x="${x0}" y="${y0}" width="${r(n.w)}" height="${r(n.h)}" rx="10" ry="10"/>` +
-          `${textSVG(n)}</g>`
+          `${textSVG(n)}${n.calls ? rakeSVG(n) : ''}</g>`
         );
       default:
         return '';
@@ -77,9 +96,9 @@
 
   function edgeSVG(e) {
     const d = e.points.map(([x, y], i) => `${i ? 'L' : 'M'}${r(x)},${r(y)}`).join(' ');
-    const loop = e.kind === 'loop';
-    const marker = e.arrow ? ` marker-end="url(#${loop ? 'p2u-arrow-loop' : 'p2u-arrow'})"` : '';
-    const path = `<path class="p2u-edge${loop ? ' p2u-loop-edge' : ''}" d="${d}"${marker}${loopAttrs(e)}/>`;
+    const kind = { loop: ['-loop', ' p2u-loop-edge'], call: ['-call', ' p2u-call-edge'] }[e.kind] || ['', ''];
+    const marker = e.arrow ? ` marker-end="url(#p2u-arrow${kind[0]})"` : '';
+    const path = `<path class="p2u-edge${kind[1]}" d="${d}"${marker}${groupAttrs(e)}/>`;
     // Edges are too thin to hover comfortably: give loop-back edges an
     // invisible, wider hit area.
     const hit = e.loopId
@@ -95,13 +114,14 @@
     `<path class="${cls}" d="M1,1.5 L9.5,5 L1,8.5"/></marker>`;
 
   function labelSVG(l) {
-    return `<text class="p2u-guard" x="${r(l.x)}" y="${r(l.y)}" text-anchor="${l.anchor}" dominant-baseline="central"${loopAttrs(l)}>${esc(l.text)}</text>`;
+    const cls = l.kind === 'value' ? 'p2u-guard p2u-value' : 'p2u-guard';
+    return `<text class="${cls}" x="${r(l.x)}" y="${r(l.y)}" text-anchor="${l.anchor}" dominant-baseline="central"${groupAttrs(l)}>${esc(l.text)}</text>`;
   }
 
   function frameSVG(f) {
     const tabW = Math.min(f.w, f.tabW);
     const [x, y] = [r(f.x), r(f.y)];
-    const attrs = (f.line ? ` data-line="${f.line}"` : '') + loopAttrs(f);
+    const attrs = (f.line ? ` data-line="${f.line}"` : '') + groupAttrs(f);
     return (
       `<g class="p2u-frame"${attrs}>` +
       `<rect x="${x}" y="${y}" width="${r(f.w)}" height="${r(f.h)}" rx="14" ry="14"/>` +
@@ -116,9 +136,15 @@
     const { width: w, height: h } = diagram;
     return [
       `<svg xmlns="http://www.w3.org/2000/svg" class="p2u-diagram" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">`,
-      `<defs>${marker('p2u-arrow', 'p2u-arrowhead')}${marker('p2u-arrow-loop', 'p2u-arrowhead p2u-arrowhead-loop')}</defs>`,
+      '<defs>',
+      marker('p2u-arrow', 'p2u-arrowhead'),
+      marker('p2u-arrow-loop', 'p2u-arrowhead p2u-arrowhead-loop'),
+      marker('p2u-arrow-call', 'p2u-arrowhead p2u-arrowhead-call'),
+      '</defs>',
       ...diagram.frames.map(frameSVG), // outermost first, behind everything else
-      ...diagram.edges.map(edgeSVG),
+      // Invokes edges are an overlay: draw them under control flow and nodes.
+      ...diagram.edges.filter((e) => e.kind === 'call').map(edgeSVG),
+      ...diagram.edges.filter((e) => e.kind !== 'call').map(edgeSVG),
       ...diagram.nodes.map(nodeSVG),
       ...diagram.labels.map(labelSVG),
       '</svg>',

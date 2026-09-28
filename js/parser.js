@@ -5,19 +5,24 @@
  * lines indented below it, and its block ends where the indentation does.
  *
  * AST node shapes:
- *   { type: 'action', text, line }
+ *   { type: 'action', text, calls?: [frameName], line }
  *   { type: 'if', branches: [{ cond, body, line }], elseBody: Stmt[] | null, line }
  *   { type: 'while', cond, body, iterate?: true, line }   (iterate: FOR loop)
  *   { type: 'doWhile', body, cond, line }                  (DO ... WHILE cond)
- *   { type: 'return', text: string | null, line }
- *   { type: 'frame', title, body, line }                   (named frame; may nest)
+ *   { type: 'start', line }                                (initial node)
+ *   { type: 'end', value?: string, line }                  (activity final node; END x ends with x)
+ *   { type: 'frame', title, name: string | null, body, line }   (DEF)
+ *
+ * A DEF is a definition, not a step in the surrounding flow. Its `name` is
+ * the identifier its title starts with (`fib` for `DEF fib(n, d)`); an action
+ * whose text uses `name(` is a call to it and lists it in `calls`.
  */
 (function () {
   'use strict';
   const P2U = (globalThis.P2U = globalThis.P2U || {});
 
   const RE = {
-    frame: /^frame\s+(.+)$/i,
+    def: /^def\s+(.+)$/i,
     ifStmt: /^if\s+(.+)$/i,
     elif: /^elif\s+(.+)$/i,
     elseStmt: /^else$/i,
@@ -27,9 +32,13 @@
     whileStmt: /^while\s+(.+)$/i,
     doStmt: /^do$/i,
     doEnd: /^while\s+(.+)$/i,
-    returnStmt: /^return\b\s*(.*)$/i,
+    start: /^start$/i,
+    end: /^end(?:\s+(.+))?$/i,
+    frameName: /^([A-Za-z_]\w*)\s*(?:\(|$)/, // `fib(n, d)` -> fib, `Main` -> Main
     trailingThen: /\s+then$/i,
-    endLine: /^end(?:\s*(?:if|while|for|do|frame))?$/i, // leftovers from terminator-style code
+    endLine: /^end\s*(?:if|while|for|do|def|frame)$/i, // leftovers from terminator-style code
+    // Old keywords that were renamed: warn and point at the new one.
+    renamed: /^(frame|return)\b/i,
     unsupported: /^(break|continue|goto|switch|case|try|catch)\b/i,
   };
 
@@ -111,10 +120,14 @@
       this.diagnostics.push({ line, severity, message });
     }
 
-    /** Parse statements at `indent` until the indentation drops below it. */
-    parseBlock(indent) {
+    /**
+     * Parse statements at `indent` until the indentation drops below it.
+     * `allowStart`: START may open this block (the program or a DEF body).
+     */
+    parseBlock(indent, allowStart = false) {
       const stmts = [];
       let terminated = null;
+      let steps = 0; // flow statements so far (DEF definitions don't count)
       while (this.i < this.lines.length) {
         const ln = this.peek();
         if (ln.indent < indent) break;
@@ -124,13 +137,21 @@
           continue;
         }
         const parsed = this.parseStatement();
-        if (terminated && parsed.length) {
-          this.report(ln.line, 'warning', `Unreachable: follows RETURN on line ${terminated.line}`);
-          terminated = null; // report once per block
-        }
         for (const s of parsed) {
+          if (s.type === 'frame') {
+            stmts.push(s);
+            continue;
+          }
+          if (s.type === 'start' && (!allowStart || steps > 0)) {
+            this.report(s.line, 'warning', 'START belongs at the beginning of the program or of a DEF; nothing can flow into it');
+          }
+          if (terminated) {
+            this.report(s.line, 'warning', `Unreachable: follows ${terminated.type.toUpperCase()} on line ${terminated.line}`);
+            terminated = null; // report once per block
+          }
           stmts.push(s);
-          if (s.type === 'return') terminated = s;
+          steps++;
+          if (s.type === 'end') terminated = s;
         }
       }
       return stmts;
@@ -139,7 +160,7 @@
     /** Parse the indented block that belongs to `header`. */
     parseBody(header, keyword) {
       const next = this.peek();
-      if (next && next.indent > header.indent) return this.parseBlock(next.indent);
+      if (next && next.indent > header.indent) return this.parseBlock(next.indent, keyword === 'DEF');
       this.report(header.line, 'warning', `Empty ${keyword}: indent the lines that belong to it`);
       return [];
     }
@@ -150,8 +171,21 @@
       let m;
       this.i++;
 
-      if ((m = t.match(RE.frame))) {
-        return [{ type: 'frame', title: normalize(m[1]), body: this.parseBody(ln, 'FRAME'), line: ln.line }];
+      if ((m = t.match(RE.def))) {
+        const title = normalize(m[1]);
+        const name = (title.match(RE.frameName) || [])[1] || null;
+        return [{ type: 'frame', title, name, body: this.parseBody(ln, 'DEF'), line: ln.line }];
+      }
+
+      if (RE.start.test(t)) return [{ type: 'start', line: ln.line }];
+
+      // `END IF` and friends are terminator-style leftovers, not `END <value>`.
+      if (RE.endLine.test(t)) {
+        this.report(ln.line, 'warning', `${t.toUpperCase()} is not a keyword; blocks end where their indentation does (END alone is an end node)`);
+        return [action(t, ln.line)];
+      }
+      if ((m = t.match(RE.end))) {
+        return [m[1] ? { type: 'end', value: m[1].trim(), line: ln.line } : { type: 'end', line: ln.line }];
       }
 
       if (RE.strayElse.test(t)) {
@@ -173,12 +207,9 @@
 
       if (RE.doStmt.test(t)) return [this.parseDoWhile(ln)];
 
-      if ((m = t.match(RE.returnStmt))) {
-        return [{ type: 'return', text: m[1] ? t : null, line: ln.line }];
-      }
-
-      if (RE.endLine.test(t)) {
-        this.report(ln.line, 'warning', 'END is not a keyword; blocks end where their indentation does');
+      if ((m = t.match(RE.renamed))) {
+        const kw = m[1].toUpperCase();
+        this.report(ln.line, 'warning', `${kw} is not a keyword; use ${kw === 'FRAME' ? 'DEF' : 'END'} instead`);
       } else if ((m = t.match(RE.unsupported))) {
         this.report(ln.line, 'warning', `${m[1].toUpperCase()} is not supported yet; drawn as a plain action`);
       }
@@ -237,6 +268,39 @@
     }
   }
 
+  /** Every statement in the tree, depth first. */
+  function* walk(stmts) {
+    for (const s of stmts) {
+      yield s;
+      if (s.body) yield* walk(s.body);
+      if (s.branches) for (const b of s.branches) yield* walk(b.body);
+      if (s.elseBody) yield* walk(s.elseBody);
+    }
+  }
+
+  /**
+   * Mark actions that call a DEF: their text uses `name(` where
+   * `name` is a frame's name. Frames can be called before they're defined and
+   * can call themselves (recursion).
+   */
+  function annotateCalls(body, parser) {
+    const frames = new Map();
+    for (const s of walk(body)) {
+      if (s.type !== 'frame' || !s.name) continue;
+      const first = frames.get(s.name);
+      if (first) {
+        parser.report(s.line, 'warning', `Another DEF is already named ${s.name} (line ${first.line}); calls go to that one`);
+      } else frames.set(s.name, s);
+    }
+    if (!frames.size) return;
+    const patterns = [...frames.keys()].map((name) => [name, new RegExp(`(?:^|[^\\w.])${name}\\s*\\(`)]);
+    for (const s of walk(body)) {
+      if (s.type !== 'action') continue;
+      const calls = patterns.filter(([, re]) => re.test(s.text)).map(([name]) => name);
+      if (calls.length) s.calls = calls;
+    }
+  }
+
   /**
    * @param {string} source
    * @returns {{ body: object[], diagnostics: {line:number, severity:string, message:string}[] }}
@@ -247,11 +311,12 @@
     if (mixedLine !== null) {
       parser.report(mixedLine, 'warning', 'Indentation mixes tabs and spaces; each counts as one character');
     }
-    const body = lines.length ? parser.parseBlock(lines[0].indent) : [];
+    const body = lines.length ? parser.parseBlock(lines[0].indent, true) : [];
     // A dedent below the first line's indent leaves lines unread; keep going.
     while (parser.i < lines.length) {
-      body.push(...parser.parseBlock(parser.peek().indent));
+      body.push(...parser.parseBlock(parser.peek().indent, true));
     }
+    annotateCalls(body, parser);
     return { body, diagnostics: parser.diagnostics };
   }
 

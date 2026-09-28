@@ -34,22 +34,21 @@
   </header>
 
   <main class="workspace">
-    <section class="pane editor-pane" aria-label="Pseudocode editor">
+    <section class="pane editor-pane" id="editor-pane" aria-label="Pseudocode editor">
       <div class="pane-head">
         <span>Pseudocode</span>
         <button type="button" class="link" id="syntax-toggle" aria-expanded="false" aria-controls="syntax">Syntax help</button>
       </div>
       <div class="syntax" id="syntax" hidden>
         <table>
-          <tr><td><code>IF c</code> / <code>ELIF c</code> / <code>ELSE</code></td><td>Decision with <code>c</code> inside, <code>yes</code>/<code>no</code> paths, merged afterwards</td></tr>
-          <tr><td><code>WHILE c</code></td><td>Pre-test loop that flows back into its decision. Loop decisions have a double outline; hover one to highlight what's inside it.</td></tr>
-          <tr><td><code>FOR …</code></td><td>Loop over anything, e.g. <code>FOR x IN xs</code>; paths are <code>next</code>/<code>done</code></td></tr>
-          <tr><td><code>DO … WHILE c</code></td><td>Post-test loop</td></tr>
-          <tr><td><code>RETURN</code> · <code>RETURN x</code></td><td>Flow to an activity final node</td></tr>
-          <tr><td><code>FRAME Name</code></td><td>Named frame around its indented block. Frames nest; flow enters through the top border and leaves through the bottom. A program that is one frame gets the start and end inside it.</td></tr>
-          <tr><td>anything else</td><td>Action</td></tr>
+          <tr><td><code>START</code> / <code>END</code></td><td>start / end node (<code>END x</code> ends with x)</td></tr>
+          <tr><td><code>IF</code> / <code>ELIF</code> / <code>ELSE</code></td><td>decision</td></tr>
+          <tr><td><code>WHILE</code></td><td>loop</td></tr>
+          <tr><td><code>FOR …</code></td><td>loop over …</td></tr>
+          <tr><td><code>DO</code> … <code>WHILE</code></td><td>loop, test last</td></tr>
+          <tr><td><code>DEF</code> / <code>DEF f()</code></td><td>frame / callable frame: <code>f()</code> calls it</td></tr>
         </table>
-        <p>Blocks are defined by indentation alone and end where it does; Tab inserts one tab character, one indentation level. A trailing colon is optional. Comments: <code>//</code> or a leading <code>#</code>.</p>
+        <p>Indent to nest · <code>//</code> comment</p>
       </div>
       <div class="editor">
         <pre class="gutter" id="gutter" aria-hidden="true"></pre>
@@ -58,6 +57,9 @@
       </div>
       <div class="problems" id="problems" aria-live="polite"></div>
     </section>
+
+    <div class="divider" id="divider" role="separator" aria-orientation="vertical" aria-controls="editor-pane"
+      aria-label="Resize editor (double-click to reset)" tabindex="0"></div>
 
     <section class="pane diagram-pane" aria-label="Activity diagram">
       <div class="viewport" id="viewport" tabindex="0" aria-label="Diagram. Drag to pan, scroll to zoom.">

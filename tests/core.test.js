@@ -82,16 +82,42 @@ test('unindented bodies are empty blocks, not terminator mode', () => {
   const ast = parse('WHILE x\nx = x - 1\nEND WHILE');
   assert.deepEqual(strip(ast.body[0]), { type: 'while', cond: 'x', body: [] });
   assert.ok(ast.diagnostics.some((d) => d.line === 1 && /Empty WHILE/.test(d.message)));
-  // END is plain text now, with a hint.
+  // A terminator-style closer is plain text, with a hint.
   assert.deepEqual(strip(ast.body[2]), { type: 'action', text: 'END WHILE' });
-  assert.ok(ast.diagnostics.some((d) => d.line === 3 && /END is not a keyword/.test(d.message)));
+  assert.ok(ast.diagnostics.some((d) => d.line === 3 && /END WHILE is not a keyword/.test(d.message)));
 });
 
-test('END only warns as a whole line, not inside ordinary actions', () => {
-  assert.equal(parse('end session').diagnostics.length, 0);
-  for (const src of ['END', 'END IF', 'endwhile', 'End For']) {
-    assert.ok(parse(src).diagnostics.some((d) => /END is not a keyword/.test(d.message)), src);
+test('block closers warn and stay text; END alone does not', () => {
+  assert.equal(parse('END').diagnostics.length, 0);
+  for (const src of ['END IF', 'endwhile', 'End For', 'END DEF', 'END FRAME']) {
+    const ast = parse(src);
+    assert.ok(ast.diagnostics.some((d) => /is not a keyword/.test(d.message)), src);
+    assert.equal(ast.body[0].type, 'action', src);
   }
+});
+
+test('START and END are start and end nodes; END x ends with a value', () => {
+  const ast = parse('START\nstep\nEND');
+  assert.deepEqual(strip(ast.body), [{ type: 'start' }, { type: 'action', text: 'step' }, { type: 'end' }]);
+  assert.equal(ast.diagnostics.length, 0);
+  assert.deepEqual(strip(parse('END -1').body), [{ type: 'end', value: '-1' }]);
+});
+
+test('RETURN and FRAME are no longer keywords: warned, drawn as text', () => {
+  for (const [src, hint] of [['RETURN x', 'END'], ['FRAME Main', 'DEF']]) {
+    const ast = parse(src);
+    assert.equal(ast.body[0].type, 'action', src);
+    assert.ok(ast.diagnostics.some((d) => d.message.includes(`use ${hint} instead`)), src);
+  }
+});
+
+test('START must open the program or a DEF; code after END is unreachable', () => {
+  assert.ok(parse('step\nSTART').diagnostics.some((d) => d.line === 2 && /START belongs/.test(d.message)));
+  assert.ok(parse('IF a\n\tSTART').diagnostics.some((d) => /START belongs/.test(d.message)));
+  assert.equal(parse('DEF f\n\tSTART\n\tstep').diagnostics.length, 0);
+  // DEF definitions before START don't count as steps.
+  assert.equal(parse('DEF f\n\tstep\nSTART\ngo').diagnostics.length, 0);
+  assert.ok(parse('END\nstep').diagnostics.some((d) => d.line === 2 && /Unreachable: follows END/.test(d.message)));
 });
 
 test('FOR takes any header text; TO is not special', () => {
@@ -128,14 +154,15 @@ test('REPEAT, UNTIL and STOP are not keywords', () => {
   assert.equal(ast.diagnostics.length, 0);
 });
 
-test('FRAME owns its indented block; unreachable code inside is flagged', () => {
-  const ast = parse('FRAME Demo\n    RETURN 1\n    print "never"');
+test('DEF owns its indented block; unreachable code inside is flagged', () => {
+  const ast = parse('DEF Demo\n    END 1\n    print "never"');
   assert.deepEqual(strip(ast.body), [
     {
       type: 'frame',
       title: 'Demo',
+      name: 'Demo',
       body: [
-        { type: 'return', text: 'RETURN 1' },
+        { type: 'end', value: '1' },
         { type: 'action', text: 'print "never"' },
       ],
     },
@@ -143,8 +170,27 @@ test('FRAME owns its indented block; unreachable code inside is flagged', () => 
   assert.ok(ast.diagnostics.some((d) => /Unreachable/.test(d.message)));
 });
 
+test('a frame is callable by the identifier its title starts with', () => {
+  const names = ['DEF fib(n, d)', 'DEF Main', 'DEF Fibonacci Trace'].map((src) => parse(src + '\n\tstep').body[0].name);
+  assert.deepEqual(names, ['fib', 'Main', null]);
+});
+
+test('actions that use a frame name are calls, including recursion and forward use', () => {
+  const ast = parse('fib(3)\nfibonacci(3)\nx.fib(3)\nDEF fib(n)\n\tfib(n - 1) + fib(n - 2)');
+  const [call, notCall, method, frame] = ast.body;
+  assert.deepEqual(call.calls, ['fib']);
+  assert.equal(notCall.calls, undefined, 'a longer identifier is not a call');
+  assert.equal(method.calls, undefined, 'a method with the same name is not a call');
+  assert.deepEqual(frame.body[0].calls, ['fib']);
+});
+
+test('two frames with the same name are flagged', () => {
+  const ast = parse('DEF f()\n\ta\nDEF f()\n\tb');
+  assert.ok(ast.diagnostics.some((d) => d.line === 3 && /already named f/.test(d.message)));
+});
+
 test('frames nest and sit anywhere in the flow', () => {
-  const ast = parse('before\nFRAME Outer\n\tFRAME Inner\n\t\tstep\n\tbetween\nafter');
+  const ast = parse('before\nDEF Outer\n\tDEF Inner\n\t\tstep\n\tbetween\nafter');
   const [before, outer, after] = ast.body;
   assert.equal(before.text, 'before');
   assert.equal(after.text, 'after');
@@ -154,14 +200,14 @@ test('frames nest and sit anywhere in the flow', () => {
   assert.equal(ast.diagnostics.length, 0);
 });
 
-test('an unindented FRAME is an empty frame with a warning', () => {
-  const ast = parse('FRAME Lonely\nstep');
-  assert.deepEqual(strip(ast.body[0]), { type: 'frame', title: 'Lonely', body: [] });
-  assert.ok(ast.diagnostics.some((d) => d.line === 1 && /Empty FRAME/.test(d.message)));
+test('an unindented DEF is an empty frame with a warning', () => {
+  const ast = parse('DEF Lonely\nstep');
+  assert.deepEqual(strip(ast.body[0]), { type: 'frame', title: 'Lonely', name: 'Lonely', body: [] });
+  assert.ok(ast.diagnostics.some((d) => d.line === 1 && /Empty DEF/.test(d.message)));
 });
 
-test('only FRAME creates a frame (DEF, FUNCTION, ALGORITHM are plain actions)', () => {
-  for (const kw of ['def', 'FUNCTION', 'ALGORITHM', 'PROCEDURE']) {
+test('only DEF creates a frame (FUNCTION, ALGORITHM, PROCEDURE are plain actions)', () => {
+  for (const kw of ['FUNCTION', 'ALGORITHM', 'PROCEDURE']) {
     const ast = parse(`${kw} foo`);
     assert.deepEqual(strip(ast.body), [{ type: 'action', text: `${kw} foo` }]);
   }
@@ -233,10 +279,34 @@ function checkGeometry(d) {
   }
 }
 
-test('empty program is initial -> final', () => {
-  const d = layout(parse(''));
-  assert.deepEqual(d.nodes.map((n) => n.kind), ['initial', 'final']);
-  assert.equal(d.edges.length, 1);
+test('start and end nodes are only where START / END are written', () => {
+  assert.deepEqual(layout(parse('')).nodes, []);
+  assert.deepEqual(layout(parse('step')).nodes.map((n) => n.kind), ['action']);
+  const d = layout(parse('START\nstep\nEND'));
+  assert.deepEqual(d.nodes.map((n) => n.kind), ['initial', 'action', 'final']);
+  assert.equal(d.edges.length, 2);
+  checkGeometry(d);
+});
+
+test('END x shows its value beside the end node', () => {
+  const d = layout(parse('START\nEND -1'));
+  const end = d.nodes.find((n) => n.kind === 'final');
+  const [value] = d.labels.filter((l) => l.kind === 'value');
+  assert.equal(value.text, '-1');
+  assert.ok(value.x > end.x + end.w / 2 && Math.abs(value.y - end.y) < 0.01, 'to the right, vertically centred');
+  assert.ok(value.x + 20 <= d.width, 'inside the canvas');
+  assert.match(render(d), /class="p2u-guard p2u-value"[^>]*>-1</);
+});
+
+test('nothing flows into a START', () => {
+  const d = layout(parse('before\nSTART\nafter'));
+  const start = d.nodes.find((n) => n.kind === 'initial');
+  const into = d.edges.filter((e) => {
+    const [x, y] = e.points[e.points.length - 1];
+    return Math.abs(x - start.x) < 0.01 && Math.abs(y - (start.y - start.h / 2)) < 0.01;
+  });
+  assert.equal(into.length, 0);
+  assert.equal(d.edges.length, 1, 'only START → after');
 });
 
 test('if without else gets a no path and a merge; condition sits in the diamond', () => {
@@ -311,7 +381,7 @@ test('elements are tagged with their enclosing loops for hover highlighting', ()
 });
 
 test('statements after a loop sit straight below its exit', () => {
-  const d = layout(parse('WHILE a\n\tstep\nafter\nRETURN x'));
+  const d = layout(parse('WHILE a\n\tstep\nafter\nEND x'));
   const after = d.nodes.find((n) => n.kind === 'action' && n.lines[0] === 'after');
   const into = d.edges.find((e) => {
     const [x, y] = e.points[e.points.length - 1];
@@ -331,20 +401,20 @@ test('FOR EACH loops use next / done', () => {
 });
 
 test('branches that all return produce no merge and no global final', () => {
-  const d = layout(parse('IF a\n    RETURN 1\nELSE\n    RETURN 2'));
+  const d = layout(parse('IF a\n    END 1\nELSE\n    END 2'));
   const kinds = d.nodes.map((n) => n.kind);
   assert.ok(!kinds.includes('merge'));
   assert.equal(kinds.filter((k) => k === 'final').length, 2);
 });
 
 test('a merge is omitted when only one branch continues', () => {
-  const d = layout(parse('IF a\n    RETURN 1\nprint 2'));
+  const d = layout(parse('IF a\n    END 1\nprint 2'));
   assert.ok(!d.nodes.some((n) => n.kind === 'merge'));
   checkGeometry(d);
 });
 
-test('unreachable code after RETURN does not flow onwards', () => {
-  const d = layout(parse('IF a\n    x\nELSE\n    RETURN 0\n    dead\ny'));
+test('unreachable code after END does not flow onwards', () => {
+  const d = layout(parse('IF a\n    x\nELSE\n    END 0\n    dead\ny'));
   // Only the [a] branch continues, so no merge is needed.
   assert.ok(!d.nodes.some((n) => n.kind === 'merge'));
   checkGeometry(d);
@@ -354,8 +424,10 @@ const nodeByText = (d, text) => d.nodes.find((n) => n.lines && n.lines.join(' ')
 const insideFrame = (n, f) =>
   n.x - n.w / 2 >= f.x && n.x + n.w / 2 <= f.x + f.w && n.y - n.h / 2 >= f.y && n.y + n.h / 2 <= f.y + f.h;
 
-test('a program that is one FRAME is the activity frame, holding initial and final nodes', () => {
-  const d = layout(parse('FRAME Main\n\tstep'));
+const touching = (e, n) => e.points.some(([x, y]) => Math.abs(x - n.x) <= n.w / 2 + 0.01 && Math.abs(y - n.y) <= n.h / 2 + 0.01);
+
+test('a frame has its own START and END inside it', () => {
+  const d = layout(parse('DEF Main\n\tSTART\n\tstep\n\tEND'));
   assert.equal(d.frames.length, 1);
   for (const kind of ['initial', 'final']) {
     assert.ok(insideFrame(d.nodes.find((n) => n.kind === kind), d.frames[0]), kind);
@@ -363,29 +435,113 @@ test('a program that is one FRAME is the activity frame, holding initial and fin
   checkGeometry(d);
 });
 
-test('inline frames: flow crosses the top border in and the bottom border out', () => {
-  const d = layout(parse('before\nFRAME Sub\n\tinside\nafter'));
+test('frames are definitions: drawn beside the flow and not connected to it by control flow', () => {
+  const d = layout(parse('before\nDEF Sub()\n\tinside\nafter'));
   const [frame] = d.frames;
-  assert.equal(frame.title, 'Sub');
-  const inside = nodeByText(d, 'inside');
-  const after = nodeByText(d, 'after');
+  const [before, inside, after] = ['before', 'inside', 'after'].map((t) => nodeByText(d, t));
   assert.ok(insideFrame(inside, frame));
-  for (const n of ['before', 'after'].map((t) => nodeByText(d, t)).concat(d.nodes.filter((n) => n.kind !== 'action'))) {
-    assert.ok(!insideFrame(n, frame), `${n.kind} should be outside the frame`);
-  }
-  const endingAt = (n) => d.edges.find((e) => {
-    const [x, y] = e.points[e.points.length - 1];
-    return Math.abs(x - n.x) < 0.01 && Math.abs(y - (n.y - n.h / 2)) < 0.01;
-  });
-  const into = endingAt(inside);
-  assert.ok(into.points[0][1] < frame.y, 'incoming edge starts above the frame');
-  const out = endingAt(after);
-  assert.ok(out.points[0][1] < frame.y + frame.h && out.points[0][1] > frame.y, 'outgoing edge starts inside the frame');
+  assert.ok(!insideFrame(before, frame) && !insideFrame(after, frame));
+  assert.ok(frame.x > Math.max(before.x + before.w / 2, after.x + after.w / 2), 'definitions sit right of the flow');
+  const flow = d.edges.filter((e) => e.kind !== 'call');
+  assert.equal(flow.length, 1, 'before → after only');
+  assert.ok(!touching(flow[0], inside));
   checkGeometry(d);
 });
 
+test('a DEF written inside an IF is lifted to the enclosing scope', () => {
+  const d = layout(parse('DEF Main\n\tIF a\n\t\tDEF helper()\n\t\t\tstep\n\t\tx\n\ty'));
+  const main = d.frames.find((f) => f.title === 'Main');
+  const helper = d.frames.find((f) => f.title === 'helper()');
+  assert.ok(helper.x > nodeByText(d, 'x').x && helper.x > nodeByText(d, 'y').x);
+  assert.ok(helper.x > main.x && helper.x + helper.w < main.x + main.w);
+  checkGeometry(d);
+});
+
+test('calls get a rake and a dashed invokes edge to the called frame', () => {
+  const d = layout(parse('START\nrun()\nEND\nDEF run()\n\tSTART\n\twork\n\tEND'));
+  const call = nodeByText(d, 'run()');
+  const [frame] = d.frames;
+  assert.deepEqual(call.calls, [frame.frameId]);
+  const edges = d.edges.filter((e) => e.kind === 'call');
+  assert.equal(edges.length, 1);
+  // The frame slides down so its START is level with the call: a straight line into START's left side.
+  const start = d.nodes.find((n) => n.kind === 'initial' && insideFrame(n, frame));
+  assert.equal(edges[0].points.length, 2, JSON.stringify(edges[0].points));
+  const [x, y] = edges[0].points[1];
+  assert.ok(Math.abs(x - (start.x - start.w / 2)) < 0.01 && Math.abs(y - start.y) < 0.5, 'ends at the frame START');
+  assert.deepEqual(edges[0].inFrames, [frame.frameId]);
+  const svg = render(d);
+  assert.match(svg, /class="p2u-rake"/);
+  assert.match(svg, /class="p2u-edge p2u-call-edge"/);
+  assert.match(svg, new RegExp(`data-calls="${frame.frameId}"`));
+  checkGeometry(d);
+});
+
+test('recursive calls route back to their own frame through its right margin', () => {
+  const d = layout(parse('DEF fib(n)\n\tSTART\n\tIF n <= 1\n\t\tEND n\n\tr = fib(n - 1) + fib(n - 2)\n\tEND r'));
+  const [frame] = d.frames;
+  const call = d.nodes.find((n) => n.calls);
+  assert.ok(insideFrame(call, frame));
+  const [edge] = d.edges.filter((e) => e.kind === 'call');
+  assert.ok(edge.points.every(([x, y]) => x >= frame.x && x <= frame.x + frame.w && y >= frame.y && y <= frame.y + frame.h), 'stays inside the frame');
+  const start = d.nodes.find((n) => n.kind === 'initial');
+  const [x, y] = edge.points[edge.points.length - 1];
+  assert.deepEqual([x, y], [start.x + start.w / 2, start.y], "ends at the right side of the frame's START");
+  assert.equal(edge.points.length, 4, 'right, up, left');
+  checkGeometry(d);
+});
+
+test("a recursive call's last run to START doesn't cut through nested frames", () => {
+  const d = layout(parse('DEF f()\n\tSTART\n\tg()\n\tf()\n\tDEF g()\n\t\tSTART\n\t\tx'));
+  const outer = d.frames.find((fr) => fr.name === 'f');
+  const nested = d.frames.find((fr) => fr.name === 'g');
+  const rec = d.edges.find((e) => e.kind === 'call' && e.inFrames[0] === outer.frameId);
+  const [[ax, y], [bx]] = rec.points.slice(-2);
+  const [lo, hi] = [Math.min(ax, bx), Math.max(ax, bx)];
+  const crosses = y > nested.y && y < nested.y + nested.h && lo < nested.x + nested.w && hi > nested.x;
+  assert.ok(!crosses, JSON.stringify({ y, nested: [nested.y, nested.y + nested.h] }));
+  checkGeometry(d);
+});
+
+test('a frame without START is called at its title tab', () => {
+  const d = layout(parse('go()\nDEF go()\n\twork'));
+  const [frame] = d.frames;
+  const [edge] = d.edges.filter((e) => e.kind === 'call');
+  const [x, y] = edge.points[edge.points.length - 1];
+  assert.equal(x, frame.x);
+  assert.ok(Math.abs(y - (frame.y + 15)) < 0.5, 'at the title tab');
+  assert.equal(edge.points.length, 2, 'still straight: the frame is placed level with the call');
+  checkGeometry(d);
+});
+
+test('frames placed above the flow push the flow down instead', () => {
+  // The call is the very first step, higher than the frame's START can sit.
+  const d = layout(parse('go()\nDEF go()\n\tSTART\n\twork'));
+  const [edge] = d.edges.filter((e) => e.kind === 'call');
+  assert.equal(edge.points.length, 2);
+  checkGeometry(d);
+});
+
+test('frames in a column never overlap, even when two want the same height', () => {
+  const d = layout(parse('START\na() + b()\nDEF a()\n\tSTART\n\tx\nDEF b()\n\tSTART\n\ty'));
+  assert.equal(d.frames.length, 2);
+  const edges = d.edges.filter((e) => e.kind === 'call');
+  assert.equal(edges.length, 2);
+  assert.deepEqual(edges.map((e) => e.points.length).sort(), [2, 4], 'one straight, one jogs to the pushed-down frame');
+  checkGeometry(d);
+});
+
+test('the Fibonacci example calls fib from Main and recursively', () => {
+  const d = layout(parse(examples.find((e) => /Fibonacci/.test(e.name)).source));
+  const fib = d.frames.find((f) => f.name === 'fib');
+  const callers = d.nodes.filter((n) => n.calls && n.calls.includes(fib.frameId)).map((n) => n.lines.join(' '));
+  assert.deepEqual(callers.sort(), ['fib(n - 1, d + 1) + fib(n - 2, d + 1)', 'fib(n, 0)'].sort());
+  const outer = d.edges.find((e) => e.kind === 'call' && e.points.length === 2);
+  assert.ok(outer, 'fib(n, 0) → fib is a straight line');
+});
+
 test('nested frames nest geometrically and loops inside frames stay tagged', () => {
-  const d = layout(parse('FRAME Outer\n\tFRAME Inner\n\t\tWHILE a\n\t\t\tstep\n\tafter'));
+  const d = layout(parse('DEF Outer\n\tDEF Inner\n\t\tWHILE a\n\t\t\tstep\n\tafter'));
   const outer = d.frames.find((f) => f.title === 'Outer');
   const inner = d.frames.find((f) => f.title === 'Inner');
   assert.ok(inner.x > outer.x && inner.y > outer.y && inner.x + inner.w < outer.x + outer.w && inner.y + inner.h < outer.y + outer.h);
@@ -427,9 +583,11 @@ test('random nested programs keep edges within 4 bends', () => {
       } else if (kind === 5) {
         lines.push(`${pad}DO`, ...gen(depth - 1, indent + 1), `${pad}WHILE u${rand(99)}`);
       } else if (kind === 6 && i === count - 1) {
-        lines.push(`${pad}RETURN r`);
+        lines.push(`${pad}END r`);
       } else if (kind === 7) {
-        lines.push(`${pad}FRAME Part ${rand(99)}`, ...gen(depth - 1, indent + 1));
+        lines.push(`${pad}DEF f${rand(5)}(x)`, `${pad}\tSTART`, ...gen(depth - 1, indent + 1));
+      } else if (kind === 8) {
+        lines.push(`${pad}call f${rand(5)}(y)`);
       } else {
         lines.push(`${pad}step ${rand(999)}`);
       }
@@ -437,7 +595,7 @@ test('random nested programs keep edges within 4 bends', () => {
     return lines;
   };
   for (let i = 0; i < 300; i++) {
-    const src = gen(4, 0).join('\n');
+    const src = ['START', ...gen(4, 0)].join('\n');
     try {
       checkGeometry(layout(parse(src)));
     } catch (err) {

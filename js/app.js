@@ -26,7 +26,7 @@
     syntaxToggle: $('syntax-toggle'),
   };
 
-  const state = { ast: null, scale: 1, tx: 0, ty: 0, focusedLoop: null };
+  const state = { ast: null, scale: 1, tx: 0, ty: 0, focusKey: null };
 
   // ------------------------------------------------------------ storage
 
@@ -90,7 +90,7 @@
       ast = { body: [], diagnostics: [{ line: 0, severity: 'error', message: `Internal error: ${err.message}` }] };
     }
     state.ast = ast;
-    state.focusedLoop = null; // the old diagram's elements are gone
+    state.focusKey = null; // the old diagram's elements are gone
     showProblems(ast.diagnostics);
     renderGutter(ast.diagnostics);
     highlightCurrentLine();
@@ -175,7 +175,7 @@
     }
   }
 
-  const OPENS_BLOCK = /^\s*(?:if\b.*|elif\b.*|else|while\b.*|for\b.*|do|frame\b.*)$|:\s*$/i;
+  const OPENS_BLOCK = /^\s*(?:if\b.*|elif\b.*|else|while\b.*|for\b.*|do|def\b.*)$|:\s*$/i;
 
   function onKeyDown(e) {
     const ta = els.source;
@@ -201,32 +201,137 @@
     }
   }
 
-  // -------------------------------------------------------- loop focus
+  // ------------------------------------------------------------ divider
 
-  /** Dim everything outside loop `id` (a string), or clear with null. */
-  function focusLoop(id) {
+  const EDITOR_WIDTH_KEY = 'p2u.editorWidth';
+  const MIN_EDITOR = 240;
+  const MIN_DIAGRAM = 280;
+
+  /**
+   * Draggable split between editor and diagram. The width lives in the
+   * --editor-w custom property on .workspace; without it the CSS default
+   * (38%, at least 300px) applies.
+   */
+  function setupDivider() {
+    const divider = $('divider');
+    const workspace = divider.parentElement;
+    const editor = $('editor-pane');
+
+    const maxWidth = () => workspace.clientWidth - divider.offsetWidth - MIN_DIAGRAM;
+    const clamp = (px) => Math.round(Math.max(MIN_EDITOR, Math.min(px, maxWidth())));
+
+    function syncAria() {
+      const total = workspace.clientWidth || 1;
+      divider.setAttribute('aria-valuemin', String(Math.round((MIN_EDITOR / total) * 100)));
+      divider.setAttribute('aria-valuemax', String(Math.round((maxWidth() / total) * 100)));
+      divider.setAttribute('aria-valuenow', String(Math.round((editor.offsetWidth / total) * 100)));
+    }
+
+    function setWidth(px, persist) {
+      const width = clamp(px);
+      workspace.style.setProperty('--editor-w', `${width}px`);
+      if (persist) save(EDITOR_WIDTH_KEY, String(width));
+      syncAria();
+    }
+
+    function reset() {
+      workspace.style.removeProperty('--editor-w');
+      try {
+        localStorage.removeItem(EDITOR_WIDTH_KEY);
+      } catch {
+        /* storage unavailable */
+      }
+      syncAria();
+    }
+
+    let drag = null;
+    divider.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      drag = { x: e.clientX, width: editor.offsetWidth };
+      divider.setPointerCapture(e.pointerId);
+      divider.classList.add('dragging');
+      document.body.classList.add('resizing');
+    });
+    divider.addEventListener('pointermove', (e) => {
+      if (drag) setWidth(drag.width + e.clientX - drag.x, false);
+    });
+    const endDrag = () => {
+      if (!drag) return;
+      drag = null;
+      divider.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      save(EDITOR_WIDTH_KEY, String(editor.offsetWidth));
+    };
+    divider.addEventListener('pointerup', endDrag);
+    divider.addEventListener('pointercancel', endDrag);
+    divider.addEventListener('dblclick', reset);
+
+    divider.addEventListener('keydown', (e) => {
+      const step = e.shiftKey ? 96 : 24;
+      const width = editor.offsetWidth;
+      const next = { ArrowLeft: width - step, ArrowRight: width + step, Home: MIN_EDITOR, End: maxWidth() }[e.key];
+      if (next === undefined) return;
+      e.preventDefault();
+      setWidth(next, true);
+    });
+
+    // Keep a saved width inside the window as it resizes.
+    window.addEventListener('resize', () => {
+      if (workspace.style.getPropertyValue('--editor-w')) setWidth(editor.offsetWidth, false);
+      else syncAria();
+    });
+
+    const saved = Number(load(EDITOR_WIDTH_KEY));
+    if (saved > 0) setWidth(saved, false);
+    else syncAria();
+  }
+
+  // ------------------------------------------------------------- focus
+
+  /**
+   * What hovering `target` should highlight, or null:
+   * - a loop's decision or back edge (data-loop-id) lights that loop;
+   * - a call action (data-calls) lights the frames it invokes, and itself.
+   * `attr` names the membership list (data-loops / data-frames) to match.
+   */
+  function focusFor(target) {
+    const loop = target.closest('[data-loop-id]');
+    if (loop) return { key: `loop:${loop.dataset.loopId}`, attr: 'loops', ids: [loop.dataset.loopId] };
+    const call = target.closest('.p2u-node[data-calls]');
+    if (call) {
+      return { key: `call:${call.dataset.line}:${call.dataset.calls}`, attr: 'frames', ids: call.dataset.calls.split(' '), keep: call };
+    }
+    return null;
+  }
+
+  /** Dim everything outside the focused group; null clears. */
+  function applyFocus(focus) {
     const svg = els.stage.querySelector('svg');
     if (!svg) return;
-    svg.classList.toggle('loop-focus', id !== null);
+    svg.classList.toggle('focus', !!focus);
     for (const el of svg.querySelectorAll('.p2u-node, .p2u-edge, .p2u-guard, .p2u-frame')) {
-      const loops = el.dataset.loops ? el.dataset.loops.split(' ') : [];
-      el.classList.toggle('in-loop', id !== null && loops.includes(id));
+      let on = false;
+      if (focus) {
+        const mine = (el.dataset[focus.attr] || '').split(' ');
+        on = el === focus.keep || focus.ids.some((id) => mine.includes(id));
+      }
+      el.classList.toggle('in-focus', on);
     }
   }
 
-  function setupLoopHover() {
-    // A loop's decision and its loop-back edge carry data-loop-id.
+  function setupHoverFocus() {
     els.stage.addEventListener('pointerover', (e) => {
-      const handle = e.target.closest('[data-loop-id]');
-      const id = handle ? handle.dataset.loopId : null;
-      if (id !== state.focusedLoop) {
-        state.focusedLoop = id;
-        focusLoop(id);
+      const focus = focusFor(e.target);
+      const key = focus ? focus.key : null;
+      if (key !== state.focusKey) {
+        state.focusKey = key;
+        applyFocus(focus);
       }
     });
     els.stage.addEventListener('pointerleave', () => {
-      state.focusedLoop = null;
-      focusLoop(null);
+      state.focusKey = null;
+      applyFocus(null);
     });
   }
 
@@ -335,7 +440,7 @@
   }
 
   function fileName() {
-    // Name the file after the first top-level FRAME, if any.
+    // Name the file after the first top-level DEF, if any.
     const frame = state.ast && state.ast.body.find((s) => s.type === 'frame');
     const title = frame && frame.title;
     return (title || 'activity-diagram').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'activity-diagram';
@@ -344,9 +449,11 @@
   function setupExport() {
     const svg = () => els.stage.querySelector('svg');
     $('export-svg').addEventListener('click', () => svg() && exporters.downloadSVG(svg(), fileName()));
+    // PNG follows the theme on screen; SVG stays light for embedding in documents.
     $('export-png').addEventListener('click', () => {
-      if (svg()) exporters.downloadPNG(svg(), fileName()).catch((err) => toast(err.message));
-    });  }
+      if (svg()) exporters.downloadPNG(svg(), fileName(), currentTheme()).catch((err) => toast(err.message));
+    });
+  }
 
   // -------------------------------------------------------------- init
 
@@ -380,7 +487,8 @@
     for (const ev of ['keyup', 'click', 'focus', 'blur']) els.source.addEventListener(ev, highlightCurrentLine);
 
     setupPanZoom();
-    setupLoopHover();
+    setupHoverFocus();
+    setupDivider();
     setupExport();
     setupThemeToggle();
 
